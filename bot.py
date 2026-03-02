@@ -18,8 +18,8 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_EXTERNAL_URL = os.getenv("https://telegram-ytdl-bot-2.onrender.com")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://telegram-ytdl-bot-2.onrender.com")
 DEFAULT_MAX_SIZE_MB = 49
 
 app = Flask(__name__)
