@@ -156,6 +156,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- Webhook Setup --------------------
 
+# -------------------- Webhook Setup --------------------
+
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -173,7 +175,10 @@ def index():
 
 async def setup_webhook():
     await telegram_app.initialize()
-    await telegram_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
+    # استخراج الرابط تلقائياً من بيئة Render
+    base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    webhook_url = f"https://{base_url}/{BOT_TOKEN}"
+    await telegram_app.bot.set_webhook(webhook_url)
 
 if __name__ == "__main__":
     import asyncio
