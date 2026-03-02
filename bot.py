@@ -1,8 +1,4 @@
-
 # ================== الإعدادات ==================
-# BOT_TOKEN = "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk"
-#RENDER_EXTERNAL_URL = os.getenv("https://telegram-ytdl-bot-2.onrender.com")
-
 import os
 import math
 import yt_dlp
@@ -17,19 +13,25 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
+import asyncio
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk")
+# ----------- إعدادات البوت -----------
+BOT_TOKEN = "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk"
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://telegram-ytdl-bot-2.onrender.com")
 DEFAULT_MAX_SIZE_MB = 49
 
 app = Flask(__name__)
 
+# ----------- دوال مساعدة -----------
 def sizeof_fmt(num):
     for unit in ['B','KB','MB','GB']:
         if num < 1024.0:
             return f"{num:.2f} {unit}"
         num /= 1024.0
 
+# ----------- أوامر البوت -----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("🎬 أرسل رابط يوتيوب")
@@ -103,7 +105,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get("url")
     data = query.data.split("|")
     target_size = context.user_data.get("custom_size", DEFAULT_MAX_SIZE_MB)
-
     temp_dir = "/tmp"
 
     if data[0] == "audio":
@@ -132,7 +133,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if os.path.exists(filename):
         size_mb = os.path.getsize(filename) / (1024 * 1024)
-
         if size_mb > target_size and filename.endswith(".mp4"):
             compressed = os.path.join(temp_dir, "compressed.mp4")
             subprocess.run([
@@ -154,15 +154,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
 
-# -------------------- Webhook Setup --------------------
-
-# -------------------- Webhook Setup --------------------
-
+# ----------- إعدادات Telegram Bot Handler -----------
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 telegram_app.add_handler(CallbackQueryHandler(button))
 
+# ----------- Routes Flask -----------
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
@@ -173,14 +171,17 @@ async def webhook():
 def index():
     return "Bot is running"
 
+# ----------- إعداد Webhook -----------
 async def setup_webhook():
     await telegram_app.initialize()
-    # استخراج الرابط تلقائياً من بيئة Render
     base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-    webhook_url = f"https://{base_url}/{BOT_TOKEN}"
-    await telegram_app.bot.set_webhook(webhook_url)
+    if base_url:
+        webhook_url = f"https://{base_url}/{BOT_TOKEN}"
+        await telegram_app.bot.set_webhook(webhook_url)
 
+# ----------- Main -----------
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(setup_webhook())
-    app.run(host="0.0.0.0", port=10000)
+    config = Config()
+    config.bind = ["0.0.0.0:10000"]
+    asyncio.run(serve(app, config))
