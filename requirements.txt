@@ -1,6 +1,7 @@
 python-telegram-bot==20.7
 yt-dlp
 flask
+gunicorn
 
 # 
 # python-telegram-bot

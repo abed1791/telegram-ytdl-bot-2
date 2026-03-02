@@ -1,9 +1,13 @@
-#bot61-Serv-Compat
+
+# ================== الإعدادات ==================
+# BOT_TOKEN = "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk"
+#RENDER_EXTERNAL_URL = os.getenv("https://telegram-ytdl-bot-2.onrender.com")
+
 import os
 import math
 import yt_dlp
-import asyncio
-from flask import Flask, send_from_directory
+import subprocess
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -14,36 +18,38 @@ from telegram.ext import (
     filters,
 )
 
-# ================== الإعدادات ==================
-# BOT_TOKEN = "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+RENDER_EXTERNAL_URL = os.getenv("https://telegram-ytdl-bot-2.onrender.com")
+DEFAULT_MAX_SIZE_MB = 49
 
-BASE_URL = "https://telegram-ytdl-bot-1-qhnq.onrender.com"
+app = Flask(__name__)
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# ================== Flask ==================
-app_web = Flask(__name__)
-
-@app_web.route("/download/<path:filename>")
-def download_file(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
-
-# ================== أدوات مساعدة ==================
 def sizeof_fmt(num):
     for unit in ['B','KB','MB','GB']:
         if num < 1024.0:
             return f"{num:.2f} {unit}"
         num /= 1024.0
-    return f"{num:.2f} TB"
 
-# ================== أوامر البوت ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("🎬 أرسل رابط يوتيوب")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
+    if context.user_data.get("awaiting_size"):
+        text = update.message.text
+        if text.lower() in ["❌", "cancel"]:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء. أرسل رابط جديد.")
+            return
+        try:
+            context.user_data["custom_size"] = float(text)
+            context.user_data["awaiting_size"] = False
+            await update.message.reply_text("✅ تم حفظ الحجم. اختر الجودة الآن.")
+        except ValueError:
+            await update.message.reply_text("❌ أدخل رقم صحيح بالميغابايت.")
+        return
+
+    url = update.message.text
     context.user_data.clear()
     context.user_data["url"] = url
 
@@ -64,88 +70,107 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(label, callback_data=f"video|{f['format_id']}")]
             )
 
-    keyboard = video_buttons[:6]
-    keyboard.append([InlineKeyboardButton("🎵 تحميل MP3", callback_data="audio")])
+    extra_buttons = [
+        [InlineKeyboardButton("📏 إدخال حجم مخصص", callback_data="customsize")],
+        [InlineKeyboardButton("🎵 تحميل MP3", callback_data="audio")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="cancel")]
+    ]
+
+    keyboard = video_buttons[:6] + extra_buttons
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
         f"📌 {title}\n⏱ {math.floor(duration/60)} دقيقة\nاختر الجودة:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if query.data == "cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❌ تم الإلغاء. أرسل رابط جديد.")
+        return
+
+    if query.data == "customsize":
+        context.user_data["awaiting_size"] = True
+        await query.edit_message_text("📥 أدخل الحجم بالميغابايت:")
+        return
+
     await query.edit_message_text("⏳ جاري المعالجة...")
 
     url = context.user_data.get("url")
-    if not url:
-        await query.message.reply_text("❌ حدث خطأ، أعد إرسال الرابط")
-        return
-
     data = query.data.split("|")
+    target_size = context.user_data.get("custom_size", DEFAULT_MAX_SIZE_MB)
+
+    temp_dir = "/tmp"
 
     if data[0] == "audio":
-        output_name = "audio.mp3"
-        filepath = os.path.join(DOWNLOAD_DIR, output_name)
-
         ydl_opts = {
             "format": "bestaudio",
-            "outtmpl": os.path.join(DOWNLOAD_DIR, "audio.%(ext)s"),
+            "outtmpl": os.path.join(temp_dir, "audio.%(ext)s"),
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "64",
+                "preferredquality": "32",
             }],
             "nopart": True,
-            "quiet": True,
         }
+        filename = os.path.join(temp_dir, "audio.mp3")
     else:
         format_id = data[1]
-        output_name = "video.mp4"
-        filepath = os.path.join(DOWNLOAD_DIR, output_name)
-
         ydl_opts = {
             "format": format_id,
-            "outtmpl": os.path.join(DOWNLOAD_DIR, "video.%(ext)s"),
-            "nopart": True,
-            "quiet": True,
+            "outtmpl": os.path.join(temp_dir, "video.%(ext)s"),
+            "nopart": True
         }
+        filename = os.path.join(temp_dir, "video.mp4")
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
-    if os.path.exists(filepath):
-        link = f"{BASE_URL}/download/{output_name}"
-        await query.message.reply_text(
-            f"✅ تم الانتهاء\n🔗 رابط التحميل:\n{link}"
-        )
-    else:
-        await query.message.reply_text("❌ فشل التحميل")
+    if os.path.exists(filename):
+        size_mb = os.path.getsize(filename) / (1024 * 1024)
+
+        if size_mb > target_size and filename.endswith(".mp4"):
+            compressed = os.path.join(temp_dir, "compressed.mp4")
+            subprocess.run([
+                "ffmpeg", "-i", filename,
+                "-vcodec", "libx264",
+                "-crf", "28",
+                compressed
+            ])
+            os.remove(filename)
+            filename = compressed
+
+        with open(filename, "rb") as f:
+            if filename.endswith(".mp3"):
+                await query.message.reply_audio(f)
+            else:
+                await query.message.reply_video(f)
+
+        os.remove(filename)
 
     context.user_data.clear()
 
-# ================== التشغيل ==================
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+# -------------------- Webhook Setup --------------------
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button))
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+telegram_app.add_handler(CallbackQueryHandler(button))
 
-    # تشغيل Flask في Thread منفصل
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(
-        None,
-        lambda: app_web.run(
-            host="0.0.0.0",
-            port=int(os.environ.get("PORT", 10000)),
-            debug=False,
-            use_reloader=False
-        )
-    )
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    await telegram_app.process_update(update)
+    return "ok"
 
-    await app.run_polling()
+@app.route("/")
+def index():
+    return "Bot is running"
 
 if __name__ == "__main__":
-
-    asyncio.run(main())
+    telegram_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
+    app.run(host="0.0.0.0", port=10000)
