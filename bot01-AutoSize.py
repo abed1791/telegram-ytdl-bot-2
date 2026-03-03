@@ -1,15 +1,4 @@
-# 05
-# نسخة جاهزة للبوت متوافقة مع Render، مع webhook صحيح ومتوافق مع Flask بدون مشاكل async.
-# ✅ المميزات في النسخة:
-
-# Webhook مضبوط على Render مباشرة.
-
-# لا تحتاج Flask[async] لأن webhook الآن sync ويستخدم create_task.
-
-# التوكن مضمن بشكل مباشر لتسهيل التشغيل.
-
-
-
+# ================== الإعدادات ==================
 import os
 import math
 import yt_dlp
@@ -24,12 +13,12 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
+import asyncio
 
-# ================== إعدادات البوت ==================
 BOT_TOKEN = "8771343659:AAFO2am_bvULjxqi-iaPy-b_3mLGXwokwAk"
 DEFAULT_MAX_SIZE_MB = 49
-BASE_URL = "https://telegram-ytdl-bot-3.onrender.com"  # رابط Render
-
 app = Flask(__name__)
 
 def sizeof_fmt(num):
@@ -38,7 +27,7 @@ def sizeof_fmt(num):
             return f"{num:.2f} {unit}"
         num /= 1024.0
 
-# ================== دوال البوت ==================
+# ----------- أوامر البوت -----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("🎬 أرسل رابط يوتيوب")
@@ -89,7 +78,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"📌 {title}\n⏱ {math.floor(duration/60)} دقيقة\nاختر الجودة:",
+        f"📌 {title}\n⏱ {math.floor(duration/60)} دقيقة\nاختر الجودة أو أدخل حجم مخصص:",
         reply_markup=reply_markup
     )
 
@@ -112,9 +101,36 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get("url")
     data = query.data.split("|")
     target_size = context.user_data.get("custom_size", DEFAULT_MAX_SIZE_MB)
-
     temp_dir = "/tmp"
 
+    # ----------- اختيار جودة تلقائيًا -----------
+    if data[0] != "audio" and "custom_size" in context.user_data:
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        duration = info.get("duration", 0)
+        formats = [f for f in info.get("formats", []) if f.get("ext")=="mp4" and f.get("height")]
+
+        # تقريب حجم كل فيديو بالميغابايت
+        suitable_formats = []
+        for f in formats:
+            # نستخدم bitrate إن وجد، أو filesize كنسبة تقديرية
+            if f.get("filesize"):
+                size_mb = f["filesize"] / (1024*1024)
+            elif f.get("tbr") and duration:
+                size_mb = f["tbr"] * 1000 / 8 * duration / (1024*1024)
+            else:
+                size_mb = float('inf')
+            if size_mb <= target_size:
+                suitable_formats.append((f["format_id"], f.get("height", 0)))
+        # نختار أعلى جودة ممكنة ضمن الحجم
+        if suitable_formats:
+            format_id = max(suitable_formats, key=lambda x:x[1])[0]
+        else:
+            # إذا لا يوجد مناسب، نأخذ أدنى جودة
+            format_id = min(formats, key=lambda x:x.get("height",0))["format_id"]
+        data = ["video", format_id]
+
+    # ----------- إعداد ydl_opts -----------
     if data[0] == "audio":
         ydl_opts = {
             "format": "bestaudio",
@@ -140,51 +156,42 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ydl.download([url])
 
     if os.path.exists(filename):
-        size_mb = os.path.getsize(filename) / (1024 * 1024)
-
-        if size_mb > target_size and filename.endswith(".mp4"):
-            compressed = os.path.join(temp_dir, "compressed.mp4")
-            subprocess.run([
-                "ffmpeg", "-i", filename,
-                "-vcodec", "libx264",
-                "-crf", "28",
-                compressed
-            ])
-            os.remove(filename)
-            filename = compressed
-
         with open(filename, "rb") as f:
             if filename.endswith(".mp3"):
                 await query.message.reply_audio(f)
             else:
                 await query.message.reply_video(f)
-
         os.remove(filename)
 
     context.user_data.clear()
 
-# ================== إعدادات Telegram ==================
+# ----------- إعداد Telegram Bot Handler -----------
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 telegram_app.add_handler(CallbackQueryHandler(button))
 
-# ================== Webhook ==================
+# ----------- Routes Flask -----------
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
+async def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.create_task(telegram_app.process_update(update))
+    await telegram_app.process_update(update)
     return "ok"
 
 @app.route("/")
 def index():
     return "Bot is running"
 
-# ================== تشغيل البوت ==================
+async def setup_webhook():
+    await telegram_app.initialize()
+    base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    if base_url:
+        webhook_url = f"https://{base_url}/{BOT_TOKEN}"
+        await telegram_app.bot.set_webhook(webhook_url)
+
+# ----------- Main -----------
 if __name__ == "__main__":
-    import asyncio
-    async def main():
-        await telegram_app.initialize()
-        await telegram_app.bot.set_webhook(f"{BASE_URL}/{BOT_TOKEN}")
-    asyncio.run(main())
-    app.run(host="0.0.0.0", port=10000)
+    asyncio.run(setup_webhook())
+    config = Config()
+    config.bind = ["0.0.0.0:10000"]
+    asyncio.run(serve(app, config))
